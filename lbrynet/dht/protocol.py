@@ -125,11 +125,24 @@ class KademliaProtocol(protocol.DatagramProtocol):
             # Find the message that triggered this response
             if message.id in self._sentMessages:
                 # Cancel timeout timer for this RPC
-                df, timeoutCall = self._sentMessages[message.id][1:3]
+                sent_to_id, df, timeoutCall, method = self._sentMessages[message.id][0:4]
                 timeoutCall.cancel()
                 del self._sentMessages[message.id]
-                # Refresh the remote node's details in the local node's k-buckets
-                self._node.addContact(remoteContact)
+
+                if sent_to_id and sent_to_id != message.nodeID:  # sent_to_id will be None for bootstrap
+                    log.warning("mismatch: (%s) %s:%i (%s vs %s)", method, remoteContact.address, remoteContact.port,
+                                sent_to_id.encode('hex'), message.nodeID.encode('hex'))
+                    try:
+                        bad_contact = self._node._routingTable.getContact(sent_to_id)
+                        self._node.removeContact(bad_contact)
+                        log.info("failed count %s:%i - %i ", address[0], address[1], bad_contact.failedRPCs)
+                    except ValueError:
+                        log.info("failed contact %s:%i is untracked", address[0], address[1])
+                    df.errback(TimeoutError(sent_to_id))
+                    return
+                else:
+                    # Refresh the remote node's details in the local node's k-buckets
+                    self._node.addContact(remoteContact)
 
                 if hasattr(df, '_rpcRawResponse'):
                     # The RPC requested that the raw response message

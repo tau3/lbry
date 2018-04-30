@@ -176,20 +176,21 @@ class Node(object):
         :param known_node_addresses: [(str, int)] list of hostnames and ports for known dht seed nodes
         :param finished_d: (defer.Deferred) called when join succeeds
         """
+
         @defer.inlineCallbacks
-        def _resolve_seeds():
-            bootstrap_contacts = []
-            for node_address, port in known_node_addresses:
-                host = yield self.reactor_resolve(node_address)
-                # Create temporary contact information for the list of addresses of known nodes
-                contact = Contact(self._generateID(), host, port, self._protocol)
-                bootstrap_contacts.append(contact)
-            if not bootstrap_contacts:
-                if not self.hasContacts():
-                    log.warning("No known contacts!")
-                else:
-                    log.info("found contacts")
-                    bootstrap_contacts = self.contacts
+        def _resolve_seeds_and_initialize_routing():
+            if not self.hasContacts():
+                log.warning("No other nodes are known")
+                bootstrap_contacts = []
+                for node_address, port in known_node_addresses:
+                    host = yield self.reactor_resolve(node_address)
+                    # Create temporary contact information for the list of addresses of known nodes
+                    # The contact node id will be set with the responding node id when we initialize it to None
+                    contact = Contact(None, host, port, self._protocol)
+                    bootstrap_contacts.append(contact)
+                yield defer.gatherResults([contact.ping() for contact in bootstrap_contacts])
+            else:
+                bootstrap_contacts = self.contacts
             defer.returnValue(bootstrap_contacts)
 
         def _rerun(closest_nodes):
@@ -200,7 +201,7 @@ class Node(object):
                 finished_d.callback(closest_nodes)
 
         log.info("Attempting to join the DHT network")
-        d = _resolve_seeds()
+        d = _resolve_seeds_and_initialize_routing()
         # Initiate the Kademlia joining sequence - perform a search for this node's own ID
         d.addCallback(lambda contacts: self._iterativeFind(self.node_id, contacts))
         d.addCallback(_rerun)
