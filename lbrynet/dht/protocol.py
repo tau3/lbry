@@ -9,7 +9,7 @@ import constants
 import encoding
 import msgtypes
 import msgformat
-from contact import Contact
+from contact import Contact, is_ignored
 from error import BUILTIN_EXCEPTIONS, UnknownRemoteException, TimeoutError
 
 log = logging.getLogger(__name__)
@@ -115,36 +115,36 @@ class KademliaProtocol(protocol.DatagramProtocol):
             log.warning("Couldn't decode dht datagram from %s", address)
             return
 
-        remoteContact = Contact(message.nodeID, address[0], address[1], self)
-
         if isinstance(message, msgtypes.RequestMessage):
             # This is an RPC method request
+            remoteContact = Contact(message.nodeID, address[0], address[1], self)
             self._handleRPC(remoteContact, message.id, message.request, message.args)
-
         elif isinstance(message, msgtypes.ResponseMessage):
             # Find the message that triggered this response
             if message.id in self._sentMessages:
                 # Cancel timeout timer for this RPC
                 sent_to_id, df, timeoutCall, method = self._sentMessages[message.id][0:4]
+                remoteContact = Contact(sent_to_id, address[0], address[1], self)
                 timeoutCall.cancel()
                 del self._sentMessages[message.id]
-
                 if sent_to_id and sent_to_id != message.nodeID:  # sent_to_id will be None for bootstrap
-                    log.warning("mismatch: (%s) %s:%i (%s vs %s)", method, remoteContact.address, remoteContact.port,
-                                sent_to_id.encode('hex'), message.nodeID.encode('hex'))
+                    # log.warning("mismatch: (%s) %s:%i (%s vs %s)", method, remoteContact.address, remoteContact.port,
+                    #             sent_to_id.encode('hex'), message.nodeID.encode('hex'))
                     try:
-                        bad_contact = self._node._routingTable.getContact(sent_to_id)
-                        self._node.removeContact(bad_contact)
-                        log.info("failed count %s:%i - %i ", address[0], address[1], bad_contact.failedRPCs)
-                    except ValueError:
-                        log.info("failed contact %s:%i is untracked", address[0], address[1])
+                        self._node.removeContact(remoteContact)
+                    except (ValueError, IndexError):
+                        remoteContact.inc_failed_rpc()
+                    log.info("failed count %s:%i - %i ", address[0], address[1], remoteContact.failedRPCs)
                     df.errback(TimeoutError(sent_to_id))
                     return
                 else:
+                    if not remoteContact.id:  # this is a bootstrap node, now we know the id
+                        remoteContact.set_id(message.nodeID)
                     # Refresh the remote node's details in the local node's k-buckets
                     self._node.addContact(remoteContact)
 
                 if hasattr(df, '_rpcRawResponse'):
+
                     # The RPC requested that the raw response message
                     # and originating address be returned; do not
                     # interpret it

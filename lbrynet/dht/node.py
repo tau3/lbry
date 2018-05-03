@@ -24,7 +24,7 @@ import datastore
 import protocol
 from error import TimeoutError
 from peerfinder import DHTPeerFinder
-from contact import Contact
+from contact import Contact, is_ignored
 from hashwatcher import HashWatcher
 from distance import Distance
 
@@ -189,8 +189,7 @@ class Node(object):
                     contact = Contact(None, host, port, self._protocol)
                     bootstrap_contacts.append(contact)
                 yield defer.gatherResults([contact.ping() for contact in bootstrap_contacts])
-            else:
-                bootstrap_contacts = self.contacts
+            bootstrap_contacts = self.contacts
             defer.returnValue(bootstrap_contacts)
 
         def _rerun(closest_nodes):
@@ -695,7 +694,9 @@ class _IterativeFindHelper(object):
         responseMsg = responseTuple[0]
         originAddress = responseTuple[1]  # tuple: (ip adress, udp port)
         # Make sure the responding node is valid, and abort the operation if it isn't
-        if responseMsg.nodeID in self.active_contacts or responseMsg.nodeID == self.node.node_id:
+
+        if responseMsg.nodeID in self.active_contacts or responseMsg.nodeID == self.node.node_id \
+                or is_ignored(originAddress):
             return responseMsg.nodeID
 
         # Mark this node as active
@@ -754,20 +755,23 @@ class _IterativeFindHelper(object):
         return self.distance.is_closer(responseMsg.nodeID, self.active_contacts[0].id)
 
     def _addIfValid(self, contactTriple):
+        if is_ignored((contactTriple[1], contactTriple[2])):
+            raise ValueError("contact is ignored")
         if isinstance(contactTriple, (list, tuple)) and len(contactTriple) == 3:
             testContact = Contact(
                 contactTriple[0], contactTriple[1], contactTriple[2], self.node._protocol)
             if testContact not in self.shortlist:
                 self.shortlist.append(testContact)
 
-    def removeFromShortlist(self, failure, deadContactID):
+    def removeFromShortlist(self, failure, deadContact):
         """ @type failure: twisted.python.failure.Failure """
-        failure.trap(TimeoutError, defer.CancelledError, TypeError)
-        if len(deadContactID) != constants.key_bits / 8:
+        failure.trap(TimeoutError, defer.CancelledError, TypeError, ValueError)
+        if len(deadContact.id) != constants.key_bits / 8:
             raise ValueError("invalid lbry id")
-        if deadContactID in self.shortlist:
-            self.shortlist.remove(deadContactID)
-        return deadContactID
+        if deadContact.id in self.shortlist:
+            self.shortlist.remove(deadContact.id)
+        deadContact.inc_failed_rpc()
+        return deadContact.id
 
     def cancelActiveProbe(self, contactID):
         self.active_probes.pop()
@@ -834,7 +838,7 @@ class _IterativeFindHelper(object):
         rpcMethod = getattr(contact, self.rpc)
         df = rpcMethod(self.key, rawResponse=True)
         df.addCallback(self.extendShortlist)
-        df.addErrback(self.removeFromShortlist, contact.id)
+        df.addErrback(self.removeFromShortlist, contact)
         df.addCallback(self.cancelActiveProbe)
         df.addErrback(lambda _: log.exception('Failed to contact %s', contact))
         self.already_contacted.append(contact.id)

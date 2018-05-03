@@ -1,3 +1,6 @@
+from lbrynet.dht import constants
+
+
 class _Contact(object):
     """ Encapsulation for remote contact
 
@@ -12,7 +15,10 @@ class _Contact(object):
         self._networkProtocol = networkProtocol
         self.commTime = firstComm
         self.lastReplied = None
-        self.failedRPCs = 0
+
+    @property
+    def failedRPCs(self):
+        return ContactManager._rpc_failures.get((self.address, self.port), 0)
 
     def __eq__(self, other):
         if isinstance(other, _Contact):
@@ -34,6 +40,13 @@ class _Contact(object):
         compact_ip = reduce(
             lambda buff, x: buff + bytearray([int(x)]), self.address.split('.'), bytearray())
         return str(compact_ip)
+
+    def set_id(self, id):
+        if not self.id:
+            self.id = id
+
+    def inc_failed_rpc(self):
+        ContactManager._rpc_failures[(self.address, self.port)] = int(self.failedRPCs) + 1
 
     def __str__(self):
         return '<%s.%s object; IP address: %s, UDP port: %d>' % (
@@ -63,6 +76,7 @@ class _Contact(object):
 class _ContactManager(object):  # don't make duplicate Contact objects, otherwise failures can't be counted
     def __init__(self):
         self._contacts = set()
+        self._rpc_failures = {}
 
     def get_contact(self, id, address, port):
         for contact in self._contacts:
@@ -83,3 +97,8 @@ class _ContactManager(object):  # don't make duplicate Contact objects, otherwis
 
 ContactManager = _ContactManager()
 Contact = ContactManager.make_contact
+
+
+def is_ignored(origin_tuple):
+    failed_rpc_count = ContactManager._rpc_failures.get(origin_tuple, 0)
+    return failed_rpc_count > constants.rpcAttempts
